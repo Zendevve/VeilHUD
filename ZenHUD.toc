@@ -1,30 +1,21 @@
-﻿## Interface: 30300
-## Title: ZenHUD
-## Notes: Minimalist UI Automation for WotLK 3.3.5a
+## Interface: 30300
+## Title: ZenHUD - Immersion UI
+## Notes: A minimal, intelligent UI for a more cinematic Warcraft. Hides and fades UI elements for immersive gameplay.
 ## Author: Zendevve
-## Version: 1.2.0-wotlk
-## SavedVariables: ZenHUDDB
+## Version: 2.0.0-wotlk
 ## SavedVariablesPerCharacter: ZenHUDCharDB
 
-# Load order is important - dependencies must load before dependents
-# 1. Config.lua creates ZenHUD namespace and exports ZenHUD.Config
-# 2. Utils.lua requires Config, exports ZenHUD.Utils
-# 3. FrameController.lua requires Config, Utils
-# 4. FrameManager.lua requires Config, Utils, FrameController
-# 5. StateManager.lua requires Config, Utils
-# 6. MouseoverDetector.lua requires Utils, StateManager
-# 7. EventHandler.lua requires StateManager
-# 8. Options.lua requires Config, Utils (Blizzard options panel)
-# 9. MinimapButton.lua requires Config, Utils
-# 10. ZenHUD.lua main file references all modules
+# Load order: dependencies must load before dependents
+# 1. Config.lua   - Creates namespace, defines settings
+# 2. Utils.lua    - Utility functions (requires Config)
+# 3. FrameController.lua - Per-frame animation (requires Config)
+# 4. FrameManager.lua    - Frame management (requires Config, Utils, FrameController)
+# 5. Compass.lua  - Floating compass widget (requires Config, Utils)
+# 6. ZenHUD.lua   - Main entry point, events, slash commands (requires all)
 
 Config.lua
 Utils.lua
 FrameController.lua
 FrameManager.lua
-StateManager.lua
-MouseoverDetector.lua
-EventHandler.lua
-Options.lua
-MinimapButton.lua
+Compass.lua
 ZenHUD.lua

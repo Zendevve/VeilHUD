@@ -1,18 +1,25 @@
-﻿--------------------------------------------------------------------------------
--- Frame Controller - Manages fade animations for individual frames
 --------------------------------------------------------------------------------
+-- ZenHUD / Immersion UI - Frame Controller
+-- Per-frame fade animation management for WotLK 3.3.5a
+--------------------------------------------------------------------------------
+
 local ZenHUD = _G.ZenHUD
 local Config = ZenHUD.Config
-local Utils = ZenHUD.Utils
 
+--------------------------------------------------------------------------------
+-- FrameController - manages fade animation for a single frame
+--------------------------------------------------------------------------------
 local FrameController = {}
 FrameController.__index = FrameController
 
-function FrameController:New(frame)
+--- Create a new controller for a frame
+-- @param frame     The WoW frame to control
+-- @param category  "hidden", "faded", or "chat"
+function FrameController:New(frame, category)
     local instance = {
         frame = frame,
         name = frame:GetName() or "Unknown",
-        visible = frame:IsShown(),
+        category = category or "faded",
 
         -- Animation state
         animating = false,
@@ -22,82 +29,42 @@ function FrameController:New(frame)
         duration = 0,
         elapsed = 0,
 
-        -- Behavior flags
-        fadeOnly = false,  -- Don't call Hide(), just set alpha to 0
-        conditional = false,  -- Don't force Show() if frame is hidden
-
-        -- Buff frame anti-flicker (defer system)
-        deferFadeIn = false,
-        deferFadeOut = false,
-        deferReason = nil,
+        -- Track original visibility for clean restore
+        wasShown = frame:IsShown(),
     }
 
     setmetatable(instance, self)
     return instance
 end
 
-function FrameController:SetFadeOnly(value)
-    self.fadeOnly = value
-    return self
-end
-
-function FrameController:SetConditional(value)
-    self.conditional = value
-    return self
-end
-
+--- Animate to a target alpha
+-- @param alpha     Target alpha (0.0 to 1.0)
+-- @param duration  Animation duration in seconds (optional, uses config default)
 function FrameController:FadeTo(alpha, duration)
-    -- Buff frame anti-flicker logic
-    local isBuffFrame = (self.name == "BuffFrame" or self.name == "TemporaryEnchantFrame")
+    alpha = math.max(0, math.min(1, alpha))
+    duration = math.max(0.05, duration or Config:Get("fadeTime") or 0.5)
 
-    if isBuffFrame then
-        -- If fading IN and a fade OUT is requested, defer the OUT
-        local fadedAlpha = Config:Get("fadedAlpha")
-        if alpha == fadedAlpha and self.animating and self.targetAlpha == 1 then
-            self.deferFadeOut = true
-            self.deferReason = "deferred_buff_fadeout"
-            return
-        end
-
-        -- If fading OUT and a fade IN is requested, defer the IN
-        if alpha == 1 and self.animating and self.targetAlpha == fadedAlpha then
-            self.deferFadeIn = true
-            self.deferReason = "deferred_buff_fadein"
-            return
-        end
-    end
-
-    -- Don't force show conditional frames
-    if alpha > 0 and self.conditional and not self.frame:IsShown() then
-        return
-    end
-
-    -- Skip if already at target AND not animating
+    -- Skip if already at target and not animating
     if not self.animating and math.abs(self.currentAlpha - alpha) < 0.01 then
         return
     end
 
-    -- Smooth interruption: if animating to opposite direction, start from current position
-    local newTarget = Utils.Clamp(alpha, 0, 1)
-    if self.animating and newTarget ~= self.targetAlpha then
-        -- Interrupting animation - start from current position for smooth transition
-        self.startAlpha = self.currentAlpha
-    else
-        self.startAlpha = self.currentAlpha
-    end
-
-    self.targetAlpha = newTarget
-    self.duration = math.max(0.05, duration or Config:Get("fadeTime"))
+    -- Smooth interruption: always start from current position
+    self.startAlpha = self.currentAlpha
+    self.targetAlpha = alpha
+    self.duration = duration
     self.elapsed = 0
     self.animating = true
 
-    -- Prepare for fade-in
-    if alpha > self.currentAlpha then
+    -- If fading in (increasing alpha), ensure frame is shown first
+    if alpha > self.currentAlpha and not self.frame:IsShown() then
         self.frame:Show()
         self.frame:SetAlpha(self.currentAlpha)
     end
 end
 
+--- Process one animation tick
+-- @param dt  Delta time from OnUpdate
 function FrameController:Update(dt)
     if not self.animating then return end
 
@@ -114,46 +81,46 @@ function FrameController:Update(dt)
         self.currentAlpha = self.targetAlpha
         self.frame:SetAlpha(self.targetAlpha)
 
-        local isBuffFrame = (self.name == "BuffFrame" or self.name == "TemporaryEnchantFrame")
-        local fadedAlpha = Config:Get("fadedAlpha") or 0
-
-        -- Execute deferred fade-out after fade-in completes (buff frames only)
-        if self.targetAlpha == 1 and self.deferFadeOut and isBuffFrame then
-            self.deferFadeOut = false
-            self.deferReason = nil
-            self:FadeTo(fadedAlpha, Config:Get("fadeTime"))
-            return
-        end
-
-        -- Execute deferred fade-in after fade-out completes (buff frames only)
-        if self.targetAlpha == fadedAlpha and self.deferFadeIn and isBuffFrame then
-            self.deferFadeIn = false
-            self.deferReason = nil
-            -- Show at faded alpha then fade in
-            self.frame:Show()
-            self.frame:SetAlpha(fadedAlpha)
-            self:FadeTo(1, Config:Get("fadeTime"))
-            return
-        end
-
-        -- Hide frame at end of fade-out for performance (unless fadeOnly)
-        if self.targetAlpha <= 0.01 and not self.fadeOnly then
+        -- For "hidden" and "chat" category: call Hide() when fully faded out
+        -- For "faded" category: never Hide(), only use alpha (keeps frame interactive)
+        if self.targetAlpha <= 0.01 and self.category ~= "faded" then
             self.frame:Hide()
         end
     end
 end
 
-function FrameController:Show(priority)
-    local duration = priority and 0.8 or Config:Get("fadeTime")
-    self:FadeTo(1, duration)
-    self.visible = true
+--- Instantly hide the frame (no animation)
+function FrameController:HideInstant()
+    self.animating = false
+    self.currentAlpha = 0
+    self.frame:SetAlpha(0)
+    if self.category ~= "faded" then
+        self.frame:Hide()
+    end
 end
 
-function FrameController:Hide()
-    local fadedAlpha = Config:Get("fadedAlpha") or 0
-    self:FadeTo(fadedAlpha, Config:Get("fadeTime"))
-    self.visible = false
+--- Instantly restore the frame to full visibility
+function FrameController:RestoreInstant()
+    self.animating = false
+    self.currentAlpha = 1
+    self.frame:SetAlpha(1)
+    -- Only re-show if the frame was originally shown (respect conditional frames)
+    if self.wasShown then
+        self.frame:Show()
+    end
 end
 
--- Export to ZenHUD namespace
+--- Force alpha to a value without animation (for enforcement checks)
+-- @param targetAlpha  The alpha the frame should be at
+function FrameController:Enforce(targetAlpha)
+    if self.animating then return end  -- Don't interfere with active animations
+
+    local actualAlpha = self.frame:GetAlpha()
+    if math.abs(actualAlpha - targetAlpha) > 0.05 then
+        self.frame:SetAlpha(targetAlpha)
+        self.currentAlpha = targetAlpha
+    end
+end
+
+-- Export to namespace
 ZenHUD.FrameController = FrameController

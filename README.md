@@ -1,13 +1,10 @@
-﻿<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/ZenHUD-Minimalist%20UI%20Automation-8b5cf6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMCIvPjxwYXRoIGQ9Ik0xMiA2djZsNCAyIi8+PC9zdmc+">
-  <source media="(prefers-color-scheme: light)" srcset="https://img.shields.io/badge/ZenHUD-Minimalist%20UI%20Automation-8b5cf6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMDAwMDAiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMCIvPjxwYXRoIGQ9Ik0xMiA2djZsNCAyIi8+PC9zdmc+">
-  <img alt="ZenHUD Banner" src="https://img.shields.io/badge/ZenHUD-Minimalist%20UI%20Automation-8b5cf6?style=for-the-badge">
-</picture>
+# ZenHUD — Immersion UI
 
-<p align="center">
-  <strong>Intelligent UI visibility management for World of Warcraft 3.3.5a</strong><br>
-  Your UI appears when you need it, vanishes when you don't. Zero configuration.
-</p>
+A minimal, intelligent UI addon designed to make the World of Warcraft interface feel cleaner, smarter, and more immersive. Developed with a philosophy of *"invisible until needed"*, ZenHUD dynamically hides cluttered UI elements and brings them back only when they matter. 
+
+This addon is built specifically for **World of Warcraft 3.3.5a (WotLK)** and is fully compatible with both the default Blizzard UI and **DragonFlight UI: Reforged (DFRL)**.
+
+---
 
 <p align="center">
   <a href="https://github.com/Zendevve/ZenHUD/releases"><img src="https://img.shields.io/github/v/release/Zendevve/ZenHUD?style=flat-square&color=blue" alt="Release"></a>
@@ -18,135 +15,124 @@
 
 ---
 
-[Why ZenHUD?](#why-Zenhud) • [Features](#features) • [Installation](#installation) • [Usage](#usage) • [Configuration](#configuration) • [Architecture](#architecture)
+## 🌟 Core Philosophy
 
----
-
-## Why ZenHUD?
-
-> **Problem**: The default WoW UI clutters your screen during exploration, obscuring the beautiful world Blizzard created.
+> **Problem**: Standard MMORPG user interfaces clutter your screen with action bars, player panels, and chat logs during normal exploration, drawing your attention away from the beautiful world you're in.
 >
-> **Solution**: ZenHUD serves as an intelligent display driver. It automatically hides your action bars, unit frames, and buffs when they are irrelevant, and instantly restores them when combat starts, you target an entity, or mouse over the UI area.
-
-| Feature | ZenHUD | Manual Hiding | Other Addons |
-| :--- | :---: | :---: | :---: |
-| **Zero Configuration** | ✅ | ❌ | ⚠️ |
-| **Combat Safety** | ✅ Instant (0ms) | ❌ | ⚠️ |
-| **ElvUI Detection** | ✅ Native | N/A | ❌ |
-| **Performance** | ✅ Event-Driven | N/A | ⚠️ Polling |
+> **Solution**: ZenHUD serves as an intelligent, event-driven display driver. It hides or fades standard "always on screen" UI elements to let you fully appreciate the world. The UI appears when you need it (combat, targeting, resting, mouse-over) and smoothly fades away when you don't.
 
 ---
 
-## Features
+## 🧭 The Two-Tier Visibility Model
 
-### Smart Automation
-- **Combat**: UI appears instantly (0ms latency) via `PLAYER_REGEN_DISABLED` event.
-- **Targeting**: UI shows automatically when you select a valid, living target.
-- **Hover Hotspots**: Main maintains invisible "Hotspot" frames over UI areas. When your mouse enters these empty spaces, the UI fades in. No CPU polling required.
-- **Zone Awareness**: Automatically keeps UI shown in Dungeons, Raids, Arenas, and Battlegrounds (Configurable).
+ZenHUD splits your interface frames into two distinct tiers to balance raw immersion with instant accessibility:
 
-### Performance Architecture
-- **Zero-Polling**: Unlike other addons that check `MouseIsOver()` 60 times a second, ZenHUD uses `OnEnter`/`OnLeave` scripts on invisible frames.
-- **FadeOnly Mode**: Detects ElvUI and switches to Alpha-channel manipulation to prevent "Action Blocked" taint errors.
-- **Debounced Zone Checks**: Zone changes are debounced (0.6s) to prevent script thrashing during loading screens.
+| Category | Managed Frames | Idle State | Combat / Target State | Mouseover / Resting State |
+| :--- | :--- | :---: | :---: | :---: |
+| **Hidden** | Minimap, PlayerFrame, TargetFrame, Quest Tracker, Vehicle Seat Indicator, Social & Emote Menu Buttons | **0%** (Hidden) | **0%** (Hidden) | **0%** (Hidden) |
+| **Faded** | Action Bars, Pet Bar, Stance Bar, Buff & Debuff Frames, Experience/Reputation Bars, Micro Menu, Bags | **40%** | **80%** | **100%** |
+| **Chat** | ChatFrame1-7 (including tabs, background, and dock buttons) | **0%** *(Toggleable)* | **0%** | **0%** |
+
+> [!NOTE]
+> Even when the **Chat** frames are faded to `0%`, the chat edit box remains fully functional. Opening your chat input (pressing `Enter`) or typing slash commands works seamlessly without manual toggles.
 
 ---
 
-## Installation
+## ✨ Key Features
+
+### 1. Smart Triggers & Visibilty Grace Periods
+- **Zero-Latency Combat Reveal**: Instantly brings faded frames to **80%** alpha on entering combat.
+- **Target Awareness**: Fades bars in to **80%** when selecting any valid living target.
+- **Mouseover Hotspots**: Moving your cursor over hidden/faded bar areas dynamically reveals them to **100%** opacity for easy access.
+- **Town & Inn Resting**: While resting in cities or inns, faded frames automatically stay at **100%** opacity so you can manage your inventory, spells, and quests easily without combat or mouseover triggers.
+- **Debounced Grace Periods**: To prevent visual stutter, ZenHUD maintains visibility for:
+  - **8 seconds** post-combat.
+  - **2 seconds** after losing a target.
+  - **2 seconds** after moving your mouse away from a hotspot.
+
+### 2. Floating Navigation Compass
+With the minimap completely hidden, how do you find your way? 
+- ZenHUD adds a minimal, floating compass widget to your screen.
+- Displays current heading degrees and cardinal directions (N, NE, E, SE, etc.).
+- Highlighted **Gold indicator** for North.
+- Fully draggable anywhere on your screen.
+- Position is saved **per character**.
+
+### 3. DragonFlight UI: Reforged (DFRL) Detection
+ZenHUD automatically detects if you are running the popular **DragonFlight UI: Reforged** interface replacement. It hooks and fades the modern DFRL action bars, unit frames, and buff layout natively without requiring manually inputted frame names.
+
+---
+
+## 🛠️ Installation
 
 1. **Download** the latest release from the [Releases Page](https://github.com/Zendevve/ZenHUD/releases).
-2. **Extract** to `<WoW Root>/Interface/AddOns/ZenHUD/`.
-3. **Verify** you see `ZenHUD.toc` and `Config.lua`.
+2. **Extract** the zip folder into your World of Warcraft AddOns directory:
+   `World of Warcraft/Interface/AddOns/ZenHUD/`
+3. Make sure the folder is named exactly `ZenHUD` (and not `ZenHUD-master` or similar).
+4. Restart your game or reload your interface (`/reload`).
 
 ---
 
-## Usage
+## 💬 Slash Commands
 
-### Demo
+By default, the addon is loaded but **disabled** to prevent sudden UI changes until you are ready. Use the slash commands below to configure it:
 
-> [!TIP]
-> **Action Required**: Replace this placeholder with a GIF or Screencast showing ZenHUD in action (e.g., entering combat, targeting a mob).
->
-> `<img src="https://via.placeholder.com/600x400.png?text=Place+Demo+GIF+Here" alt="ZenHUD Demo" width="100%">`
-
-### Slash Commands
-
-| Command | Arguments | Description |
-| :--- | :--- | :--- |
-| `/ZenHUD` | | Show help menu |
-| `/ZenHUD options` | | Open GUI settings |
-| `/ZenHUD toggle` | | Enable/disable addon |
-| `/ZenHUD fade` | `<seconds>` | Set animation duration |
-| `/ZenHUD grace` | `<type> <sec>` | Set grace period (combat, target, mouseover) |
-| `/ZenHUD character` | | Toggle Per-Character settings mode |
-| `/ZenHUD profile` | `save/load <name>` | Manage setting profiles |
-| `/ZenHUD minimap` | | Toggle minimap button |
-| `/ZenHUD status` | | Show debug status |
-
----
-
-## Configuration
-
-Settings can be managed via `/ZenHUD options` or `Config.lua`.
-
-### Core Settings
-
-| Option | Default | Description |
-| :--- | :--- | :--- |
-| **fadeTime** | `0.8` | Animation duration in seconds. |
-| **fadedAlpha** | `0.0` | Opacity when hidden (0.0 = invisible, 0.2 = dim). |
-| **showOnTarget** | `true` | Show UI when you have a target. |
-
-### Zone Overrides
-By default, ZenHUD keeps the UI **always visible** in dangerous instances:
-- Dungeons
-- Raids
-- Arenas
-- Battlegrounds
-
-### Controlled Frames
-ZenHUD manages visibility for the following groups:
-
-<details>
-<summary><strong>View Frame List</strong></summary>
-
-| Group | Frames |
+| Command | Action |
 | :--- | :--- |
-| **Action Bars** | `MainMenuBar`, `MultiBarBottomLeft/Right`, `MultiBarLeft/Right`, `PetActionBar`, `ShapeshiftBar`, `VehicleMenuBar` |
-| **Unit Frames** | `PlayerFrame`, `PetFrame`, `TargetFrameToT` |
-| **Chat** | `ChatFrameMenuButton`, `ChatFrame1` buttons |
-| **Quest** | `WatchFrame`, `QuestWatchFrame`, `QuestTimerFrame` |
-| **Misc** | `Minimap`, `BuffFrame`, `XPBar`, `ReputationBar`, `Bags` |
-
-</details>
+| `/imui on` | Enable immersion mode (Hides/fades UI, displays compass) |
+| `/imui off` | Disable immersion mode (Restores default Blizzard UI visibility) |
+| `/imui showcompass` | Enable the floating compass |
+| `/imui hidecompass` | Disable/hide the compass |
+| `/imui showchat` | Force chat window to be visible |
+| `/imui hidechat` | Keep chat window faded to 0% |
+| `/imui status` | Display current state parameters (combat status, resting status, target, etc.) |
+| `/imui debug` | Toggle developer debug messages |
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
-ZenHUD uses a **State Machine** pattern coupled with **Event-Driven** inputs.
+ZenHUD is written using a clean, decoupled modular structure designed to minimize CPU footprint on the client:
 
 ```mermaid
-graph TD;
-    Events[WoW Events] -->|PLAYER_REGEN| EventHandler;
-    Events -->|PLAYER_TARGET| EventHandler;
-    Hotspots[Invisible Hotspots] -->|OnEnter/Leave| EventHandler;
+graph TD
+    subgraph Load Order
+        A[Config.lua] --> B[Utils.lua]
+        B --> C[FrameController.lua]
+        C --> D[FrameManager.lua]
+        B --> E[Compass.lua]
+        D --> F[ZenHUD.lua]
+        E --> F
+    end
 
-    EventHandler -->|Update| State{StateManager};
-
-    State -->|Check State| Logic[Visibility Logic];
-    Logic -- Combat/Target? --> Show;
-    Logic -- Resting/Grace? --> Show;
-    Logic -- Else --> Hide;
-
-    Show -->|Goal: 100%| FrameController;
-    Hide -->|Goal: 0%| FrameController;
-
-    FrameController -->|Fade Animation| UI[Blizzard / ElvUI Frames];
+    subgraph Runtime Visibility Flow
+        Events[WoW Events] --> F
+        F -->|State Check| State{Evaluate Trigger}
+        State -->|Resting or Mouseover| Alpha100["Faded -> 100%"]
+        State -->|In Combat or Target| Alpha80["Faded -> 80%"]
+        State -->|Grace Periods Active| AlphaGrace["Faded -> 80% / 100%"]
+        State -->|Idle State| Alpha40["Faded -> 40%"]
+        State -->|Always Hidden| Hidden0["Hidden -> 0% / Hide()"]
+        
+        Alpha100 --> D
+        Alpha80 --> D
+        AlphaGrace --> D
+        Alpha40 --> D
+        Hidden0 --> D
+        
+        D -->|Animate Alpha| Frames[World of Warcraft UI]
+    end
 ```
 
-## Contributing
-See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for development setup and Lua style guides.
+- **Config.lua**: Holds all default settings. Saves/reads settings per-character via `ZenHUDCharDB`.
+- **Utils.lua**: Light frame-based timer and logging helper.
+- **FrameController.lua**: Performs high-performance alpha transition animations with smooth interruption handling.
+- **FrameManager.lua**: Translates Blizzard and DFRL frame lists into their respective hidden/faded groups. Periodically enforces alphas to override internal WoW resets.
+- **Compass.lua**: Renders the floating cardinal compass frame, updating at 20 FPS when visible.
+- **ZenHUD.lua**: Orchestrates event listeners (combat, target, resting, zone updates), evaluates states, and exposes slash commands.
 
-## License
-MIT License. See [LICENSE](LICENSE).
+---
+
+## 📄 License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

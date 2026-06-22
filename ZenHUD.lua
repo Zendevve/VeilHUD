@@ -1,248 +1,429 @@
-﻿--------------------------------------------------------------------------------
--- ZenHUD - Minimalist UI Automation for WotLK 3.3.5a
--- Author: Zendevve
--- Version: 1.1.0-wotlk
+--------------------------------------------------------------------------------
+-- ZenHUD / Immersion UI - Main Entry Point
+-- Events, slash commands, state evaluation for WotLK 3.3.5a
+--
+-- "Best of both worlds": two-tier hidden/faded model from Immersion UI spec
+-- combined with smart triggers (mouseover, combat, target, resting) from ZenHUD
 --------------------------------------------------------------------------------
 
 local ADDON_NAME = "ZenHUD"
-local VERSION = "1.2.0"
+local VERSION = "2.0.0"
 
---------------------------------------------------------------------------------
--- Core Namespace (created by Config.lua, now just reference it)
---------------------------------------------------------------------------------
 local ZenHUD = _G.ZenHUD
--- Update version info
 ZenHUD.version = VERSION
 
---------------------------------------------------------------------------------
--- Module References (loaded from separate files via .toc)
---------------------------------------------------------------------------------
--- Config.lua, Utils.lua, and all other modules are loaded first (see .toc file)
+-- Module references (loaded from separate files via .toc)
 local Config = ZenHUD.Config
 local Utils = ZenHUD.Utils
 local FrameManager = ZenHUD.FrameManager
-local StateManager = ZenHUD.StateManager
-local MouseoverDetector = ZenHUD.MouseoverDetector
+local Compass = ZenHUD.Compass
 
 --------------------------------------------------------------------------------
--- Slash Commands
+-- State Tracking
 --------------------------------------------------------------------------------
-SLASH_ZenHUD1 = "/ZenHUD"
+local State = {
+    inCombat = false,
+    hasLivingTarget = false,
+    isResting = false,
+    mouseoverUI = false,
+
+    -- Grace period deadlines (GetTime() values)
+    graceUntil = {
+        combat = 0,
+        target = 0,
+        mouseover = 0,
+    },
+
+    -- Zone debouncing
+    lastZoneTime = 0,
+    pendingZoneCheck = false,
+
+    -- Mouseover detection
+    lastMouseoverState = false,
+    mouseoverTimer = 0,
+    MOUSEOVER_INTERVAL = 0.05,  -- Check every 50ms
+}
+
+--------------------------------------------------------------------------------
+-- Mouseover Detection (action bar area)
+--------------------------------------------------------------------------------
+
+--- Check if a frame name belongs to the action bar area
+local function IsActionBarFrame(name)
+    if not name then return false end
+
+    -- Blizzard action buttons
+    if string.find(name, "ActionButton") then return true end
+    if string.find(name, "MultiBar") then return true end
+    if string.find(name, "PetActionButton") then return true end
+    if string.find(name, "ShapeshiftButton") then return true end
+    if string.find(name, "BonusActionButton") then return true end
+
+    -- Action bar containers
+    if name == "MainMenuBar" then return true end
+    if name == "PetActionBarFrame" then return true end
+    if name == "ShapeshiftBarFrame" then return true end
+    if name == "MainMenuBarArtFrame" then return true end
+
+    -- Micro buttons and bags (part of the bottom bar area)
+    if string.find(name, "MicroButton") then return true end
+    if string.find(name, "Bag") then return true end
+    if name == "KeyRingButton" then return true end
+    if name == "MainMenuExpBar" then return true end
+    if name == "ReputationWatchBar" then return true end
+
+    -- Player frame (mouseover to see HP)
+    if name == "PlayerFrame" or string.find(name, "^PlayerFrame") then return true end
+
+    -- DragonFlight UI: Reforged
+    if string.find(name, "^DFRL_") then return true end
+    if string.find(name, "^DFRL") then return true end
+
+    return false
+end
+
+--- Mouseover detection polling (called from OnUpdate)
+local function CheckMouseover(dt)
+    State.mouseoverTimer = State.mouseoverTimer + dt
+    if State.mouseoverTimer < State.MOUSEOVER_INTERVAL then return end
+    State.mouseoverTimer = 0
+
+    local focus = GetMouseFocus and GetMouseFocus()
+    local name = focus and focus.GetName and focus:GetName()
+    local isOver = IsActionBarFrame(name)
+
+    if isOver ~= State.lastMouseoverState then
+        State.lastMouseoverState = isOver
+        SetMouseover(isOver)
+    end
+end
+
+--------------------------------------------------------------------------------
+-- State Setters
+--------------------------------------------------------------------------------
+
+--- Handle mouseover state change
+function SetMouseover(mouseoverUI)
+    local wasMouseover = State.mouseoverUI
+    State.mouseoverUI = mouseoverUI
+
+    if mouseoverUI then
+        -- Entering UI area: cancel mouseover grace
+        State.graceUntil.mouseover = 0
+        Utils.Print("Mouseover: entering UI area", true)
+    else
+        -- Leaving UI area: start grace period
+        if wasMouseover then
+            local grace = Config:Get("graceMouseover")
+            State.graceUntil.mouseover = Utils.GetTime() + grace
+            Utils.Print(string.format("Mouseover: left UI, %.1fs grace", grace), true)
+
+            Utils.After(grace, function()
+                State.graceUntil.mouseover = 0
+                Evaluate("mouseover_grace_expired")
+            end)
+        end
+    end
+
+    Evaluate("mouseover_" .. (mouseoverUI and "enter" or "leave"))
+end
+
+--- Handle combat state change
+local function SetCombat(inCombat)
+    State.inCombat = inCombat
+
+    if inCombat then
+        -- Entering combat: clear all grace periods
+        for k in pairs(State.graceUntil) do
+            State.graceUntil[k] = 0
+        end
+        Utils.Print("Combat: ENTERING", true)
+    else
+        -- Leaving combat: start grace period
+        local grace = Config:Get("graceCombat")
+        State.graceUntil.combat = Utils.GetTime() + grace
+        Utils.Print(string.format("Combat: LEAVING, %.1fs grace", grace), true)
+
+        Utils.After(grace, function()
+            State.graceUntil.combat = 0
+            Evaluate("combat_grace_expired")
+        end)
+    end
+
+    Evaluate("combat_" .. (inCombat and "enter" or "leave"))
+end
+
+--- Handle target change
+local function SetTarget(hasTarget, isAlive)
+    local hadLivingTarget = State.hasLivingTarget
+    State.hasLivingTarget = hasTarget and isAlive
+
+    if hasTarget and isAlive then
+        -- Acquired living target: cancel target grace
+        State.graceUntil.target = 0
+        Utils.Print("Target: acquired living target", true)
+    elseif not hasTarget and hadLivingTarget then
+        -- Lost living target: start grace period
+        local grace = Config:Get("graceTarget")
+        State.graceUntil.target = Utils.GetTime() + grace
+        Utils.Print(string.format("Target: lost, %.1fs grace", grace), true)
+
+        Utils.After(grace, function()
+            State.graceUntil.target = 0
+            Evaluate("target_grace_expired")
+        end)
+    end
+
+    Evaluate("target_changed")
+end
+
+--- Handle resting state change (debounced for zone transitions)
+local function SetResting(isResting)
+    State.isResting = isResting
+    Evaluate("resting_" .. (isResting and "enter" or "leave"))
+end
+
+--- Debounced zone change handler
+local function OnZoneChanged()
+    local ZONE_DEBOUNCE = 0.6
+    local now = Utils.GetTime()
+
+    if now - State.lastZoneTime < ZONE_DEBOUNCE then
+        -- Within debounce window: schedule delayed check
+        State.pendingZoneCheck = true
+        local timeLeft = ZONE_DEBOUNCE - (now - State.lastZoneTime)
+        if timeLeft < 0.05 then timeLeft = 0.05 end
+
+        Utils.After(timeLeft, function()
+            if State.pendingZoneCheck then
+                State.pendingZoneCheck = false
+                SetResting(IsResting())
+            end
+        end)
+        return
+    end
+
+    -- Outside debounce window: update immediately
+    State.lastZoneTime = now
+    SetResting(IsResting())
+end
+
+--------------------------------------------------------------------------------
+-- Core Evaluation — determines the correct alpha for faded frames
+--------------------------------------------------------------------------------
+
+--- Evaluate current state and apply the appropriate alpha to faded frames
+-- Priority (highest wins):
+--   1. Resting (in town/inn) → 100%
+--   2. Mouseover action bars → 100%
+--   3. In combat → 80%
+--   4. Has living target → 80%
+--   5. Post-combat grace → 80%
+--   6. Post-target grace → 80%
+--   7. Post-mouseover grace → 100%
+--   8. Default idle → 40%
+function Evaluate(reason)
+    if not Config:Get("enabled") then return end
+    if not ZenHUD.loaded then return end
+
+    local now = Utils.GetTime()
+    local targetAlpha
+
+    -- Priority 1: Resting → full visibility for faded frames
+    if State.isResting then
+        targetAlpha = 1.0
+
+    -- Priority 2: Mouseover → full visibility
+    elseif State.mouseoverUI then
+        targetAlpha = 1.0
+
+    -- Priority 3: In combat → combat alpha
+    elseif State.inCombat then
+        targetAlpha = Config:Get("combatAlpha")
+
+    -- Priority 4: Has living target → combat alpha
+    elseif State.hasLivingTarget then
+        targetAlpha = Config:Get("combatAlpha")
+
+    -- Priority 5-6: Combat/target grace → combat alpha
+    elseif State.graceUntil.combat > now or State.graceUntil.target > now then
+        targetAlpha = Config:Get("combatAlpha")
+
+    -- Priority 7: Mouseover grace → full visibility
+    elseif State.graceUntil.mouseover > now then
+        targetAlpha = 1.0
+
+    -- Priority 8: Default idle
+    else
+        targetAlpha = Config:Get("fadedAlpha")
+    end
+
+    Utils.Print(string.format("Evaluate [%s]: alpha=%.0f%% (combat=%s, target=%s, hover=%s, rest=%s)",
+        reason or "?",
+        targetAlpha * 100,
+        tostring(State.inCombat),
+        tostring(State.hasLivingTarget),
+        tostring(State.mouseoverUI),
+        tostring(State.isResting)
+    ), true)
+
+    FrameManager:SetFadedAlpha(targetAlpha)
+end
+
+--------------------------------------------------------------------------------
+-- Slash Commands: /imui
+--------------------------------------------------------------------------------
+SLASH_IMUI1 = "/imui"
 
 local function ShowHelp()
-    Utils.Print("Available commands:")
-    print("  /ZenHUD - Show this help")
-    print("  /ZenHUD options - Open options panel")
-    print("  /ZenHUD toggle - Enable/disable addon")
-    print("  /ZenHUD debug - Toggle debug mode")
-    print("  /ZenHUD status - Show current state")
-    print("  /ZenHUD frames - List controlled frames")
-    print("  /ZenHUD minimap - Toggle minimap button")
-    print("  /ZenHUD reload - Reload configuration")
-    print(" ")
-    print("Settings:")
-    print("  /ZenHUD fade <seconds> - Set fade animation duration")
-    print("  /ZenHUD grace combat <seconds> - Post-combat grace period")
-    print("  /ZenHUD grace target <seconds> - Post-target grace period")
-    print("  /ZenHUD grace mouseover <seconds> - Post-mouseover grace period")
-    print("  /ZenHUD settings - Show all current settings")
-    print("  /ZenHUD character - Toggle per-character settings mode")
-    print(" ")
-    print("Profiles:")
-    print("  /ZenHUD profile save <name> - Save current settings")
-    print("  /ZenHUD profile load <name> - Load a profile")
-    print("  /ZenHUD profile delete <name> - Delete a profile")
-    print("  /ZenHUD profile list - List all profiles")
+    Utils.Print("Immersion UI v" .. VERSION)
+    print("  |cFF00FF00/imui on|r — Enable immersion mode")
+    print("  |cFF00FF00/imui off|r — Disable immersion mode")
+    print("  |cFF00FF00/imui showcompass|r — Show compass")
+    print("  |cFF00FF00/imui hidecompass|r — Hide compass")
+    print("  |cFF00FF00/imui showchat|r — Show chat frames")
+    print("  |cFF00FF00/imui hidechat|r — Hide chat frames")
+    print("  |cFF00FF00/imui status|r — Show current status")
+    print("  |cFF00FF00/imui debug|r — Toggle debug mode")
 end
 
-local function ShowSettings()
-    Utils.Print("Current Settings:")
-
-    -- Show which settings mode is active
-    local usingChar = Config:IsUsingCharacterSettings()
-    print(string.format("  Settings Mode: %s", usingChar and "Character-Specific" or "Account-Wide"))
-    print(" ")
-
-    print(string.format("  Fade Time: %.2fs", Config:Get("fadeTime")))
-
-    local grace = Config:Get("gracePeriods")
-    print(string.format("  Grace Period (Combat): %.1fs", grace.combat))
-    print(string.format("  Grace Period (Target): %.1fs", grace.target))
-    print(string.format("  Grace Period (Mouseover): %.1fs", grace.mouseover))
-    print(" ")
-    print("  Show on Target: " .. (Config:Get("showOnTarget") and "Yes" or "No"))
-end
-
-local function ShowStatus()
-    Utils.Print("Current Status:")
-    print(string.format("  Enabled: %s", Config:Get("enabled") and "Yes" or "No"))
-    print(string.format("  Debug: %s", Config:Get("debug") and "Yes" or "No"))
-    print(string.format("  Loaded: %s", ZenHUD.loaded and "Yes" or "No"))
-    print(string.format("  In Combat: %s", StateManager.inCombat and "Yes" or "No"))
-    print(string.format("  Has Target: %s", StateManager.hasLivingTarget and "Yes" or "No"))
-    print(string.format("  Resting: %s", StateManager.isResting and "Yes" or "No"))
-    print(string.format("  Mounted: %s", StateManager.isMounted and "Yes" or "No"))
-    print(string.format("  Dead/Ghost: %s", StateManager.isDead and "Yes" or "No"))
-    print(string.format("  On Taxi: %s", StateManager.onTaxi and "Yes" or "No"))
-    print(string.format("  In Vehicle: %s", StateManager.inVehicle and "Yes" or "No"))
-    print(string.format("  AFK/DND: %s", StateManager.isAFK and "Yes" or "No"))
-    print(string.format("  Mouseover: %s", StateManager.mouseoverUI and "Yes" or "No"))
-
-    -- Grace periods
-    local now = Utils.GetTime()
-    local hasGrace = false
-    for name, deadline in pairs(StateManager.graceUntil) do
-        if deadline > now then
-            local remaining = deadline - now
-            print(string.format("  Grace (%s): %.1fs", name, remaining))
-            hasGrace = true
-        end
-    end
-    if not hasGrace then
-        print("  Grace: None")
-    end
-end
-
-local function ListFrames()
-    local count = FrameManager:Count()
-    Utils.Print(string.format("Controlling %d frames:", count))
-
-    local frameList = {}
-    for frame, controller in pairs(FrameManager.controllers) do
-        local name = controller.name
-        local visible = controller.visible and "visible" or "hidden"
-        local animating = controller.animating and " (animating)" or ""
-        table.insert(frameList, string.format("  %s - %s%s", name, visible, animating))
-    end
-
-    table.sort(frameList)
-    for _, line in ipairs(frameList) do
-        print(line)
-    end
-end
-
-SlashCmdList["ZenHUD"] = function(msg)
+SlashCmdList["IMUI"] = function(msg)
     msg = string.lower(msg or "")
+    local cmd = string.match(msg, "^(%S+)") or ""
 
-    -- Split message into arguments
-    local args = {}
-    for word in string.gmatch(msg, "%S+") do
-        table.insert(args, word)
-    end
-
-    local cmd = args[1] or ""
-
-    if cmd == "" or cmd == "help" then
-        ShowHelp()
-
-    elseif cmd == "options" or cmd == "config" or cmd == "settings" then
-        -- Open the Blizzard Interface Options panel
-        InterfaceOptionsFrame_OpenToCategory("ZenHUD")
-        InterfaceOptionsFrame_OpenToCategory("ZenHUD")  -- Called twice due to Blizzard bug
-        Utils.Print("Opening options panel...")
-
-    elseif cmd == "toggle" then
-        local enabled = not Config:Get("enabled")
-        Config:Set("enabled", enabled)
-        Utils.Print(string.format("Addon %s", enabled and "enabled" or "disabled"))
-        if enabled then
-            StateManager:Update()
+    if cmd == "on" then
+        Config:Set("enabled", true)
+        FrameManager:Enable()
+        -- Show compass if configured
+        if Config:Get("showCompass") then
+            Compass:Show()
         end
+        -- Set initial state
+        State.isResting = IsResting()
+        State.inCombat = UnitAffectingCombat("player")
+        local hasTarget = UnitExists("target")
+        local isAlive = hasTarget and not UnitIsDeadOrGhost("target")
+        State.hasLivingTarget = hasTarget and isAlive
+        Evaluate("enabled")
+        Utils.Print("Immersion mode |cFF00FF00enabled|r")
+
+    elseif cmd == "off" then
+        Config:Set("enabled", false)
+        FrameManager:Disable()
+        Compass:Hide()
+        Utils.Print("Immersion mode |cFFFF4444disabled|r")
+
+    elseif cmd == "showcompass" then
+        Config:Set("showCompass", true)
+        if Config:Get("enabled") then
+            Compass:Show()
+        end
+        Utils.Print("Compass |cFF00FF00shown|r")
+
+    elseif cmd == "hidecompass" then
+        Config:Set("showCompass", false)
+        Compass:Hide()
+        Utils.Print("Compass |cFFFF4444hidden|r")
+
+    elseif cmd == "showchat" then
+        Config:Set("showChat", true)
+        if Config:Get("enabled") then
+            FrameManager:SetChatVisible(true)
+        end
+        Utils.Print("Chat |cFF00FF00shown|r")
+
+    elseif cmd == "hidechat" then
+        Config:Set("showChat", false)
+        if Config:Get("enabled") then
+            FrameManager:SetChatVisible(false)
+        end
+        Utils.Print("Chat |cFFFF4444hidden|r")
+
+    elseif cmd == "status" then
+        Utils.Print("Status:")
+        print(string.format("  Enabled: %s", Config:Get("enabled") and "|cFF00FF00Yes|r" or "|cFFFF4444No|r"))
+        print(string.format("  Compass: %s", Config:Get("showCompass") and "|cFF00FF00Shown|r" or "|cFFFF4444Hidden|r"))
+        print(string.format("  Chat: %s", Config:Get("showChat") and "|cFF00FF00Shown|r" or "|cFFFF4444Hidden|r"))
+        print(string.format("  In Combat: %s", State.inCombat and "Yes" or "No"))
+        print(string.format("  Has Target: %s", State.hasLivingTarget and "Yes" or "No"))
+        print(string.format("  Resting: %s", State.isResting and "Yes" or "No"))
+        print(string.format("  Mouseover: %s", State.mouseoverUI and "Yes" or "No"))
+        print(string.format("  Frames managed: %d", FrameManager:Count()))
 
     elseif cmd == "debug" then
         local debug = not Config:Get("debug")
         Config:Set("debug", debug)
-        Utils.Print(string.format("Debug mode %s", debug and "enabled" or "disabled"))
+        Utils.Print(string.format("Debug mode %s", debug and "|cFF00FF00enabled|r" or "|cFFFF4444disabled|r"))
 
-    elseif cmd == "status" then
-        ShowStatus()
-
-    elseif cmd == "frames" then
-        ListFrames()
-
-    elseif cmd == "settings" then
-        ShowSettings()
-
-    elseif cmd == "fade" then
-        local value = tonumber(args[2])
-        if not value or value <= 0 then
-            Utils.Print("Usage: /ZenHUD fade <seconds>")
-            Utils.Print("Example: /ZenHUD fade 0.5")
-            return
-        end
-
-        Config:Set("fadeTime", value)
-        Utils.Print(string.format("Fade time set to %.2fs", value))
-
-    elseif cmd == "grace" then
-        local graceType = args[2]  -- combat, target, or mouseover
-        local value = tonumber(args[3])
-
-        if not graceType or not value or value < 0 then
-            Utils.Print("Usage: /ZenHUD grace <type> <seconds>")
-            Utils.Print("Types: combat, target, mouseover")
-            Utils.Print("Example: /ZenHUD grace combat 10.0")
-            return
-        end
-
-        local grace = Config:Get("gracePeriods")
-        if not grace[graceType] then
-            Utils.Print(string.format("Unknown grace type: %s", graceType))
-            Utils.Print("Valid types: combat, target, mouseover")
-            return
-        end
-
-        grace[graceType] = value
-        Utils.Print(string.format("Grace period (%s) set to %.1fs", graceType, value))
-
-    elseif cmd == "character" then
-        local enabled = Config:ToggleCharacterSettings()
-        if enabled then
-            Utils.Print("Switched to character-specific settings")
-            Utils.Print("Settings will now be saved per-character")
-        else
-            Utils.Print("Switched to account-wide settings")
-            Utils.Print("Settings will be shared across all characters")
-        end
-
-    elseif cmd == "reload" then
-        Config:Initialize()
-        Utils.Print("Configuration reloaded")
-        StateManager:Update()
-
-    elseif cmd == "minimap" then
-        local show = not Config:Get("showMinimapButton")
-        Config:Set("showMinimapButton", show)
-        if ZenHUD.MinimapButton then
-            if show then
-                ZenHUD.MinimapButton:Show()
-            else
-                ZenHUD.MinimapButton:Hide()
-            end
-        end
-        Utils.Print(string.format("Minimap button %s", show and "shown" or "hidden"))
-
-    elseif cmd == "profile" then
-        local action = args[2]
-        local profileName = args[3]
-
-        if action == "list" then
-            Utils.Print("Profiles: (feature coming soon)")
-        elseif action == "save" and profileName then
-            Utils.Print(string.format("Profile '%s' saved (feature coming soon)", profileName))
-        elseif action == "load" and profileName then
-            Utils.Print(string.format("Profile '%s' loaded (feature coming soon)", profileName))
-        elseif action == "delete" and profileName then
-            Utils.Print(string.format("Profile '%s' deleted (feature coming soon)", profileName))
-        else
-            Utils.Print("Usage: /ZenHUD profile <save|load|delete|list> [name]")
-        end
+    elseif cmd == "" or cmd == "help" then
+        ShowHelp()
 
     else
-        Utils.Print(string.format("Unknown command: %s", cmd))
+        Utils.Print("Unknown command: " .. cmd)
         ShowHelp()
     end
 end
+
+--------------------------------------------------------------------------------
+-- Event Handler
+--------------------------------------------------------------------------------
+local EventFrame = CreateFrame("Frame")
+
+EventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+EventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
+EventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+EventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+EventFrame:RegisterEvent("PLAYER_UPDATE_RESTING")
+EventFrame:RegisterEvent("ZONE_CHANGED")
+EventFrame:RegisterEvent("ZONE_CHANGED_INDOORS")
+EventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+
+-- Mouseover detection OnUpdate
+local mouseoverFrame = CreateFrame("Frame")
+mouseoverFrame:SetScript("OnUpdate", function(_, dt)
+    if not ZenHUD.loaded then return end
+    if not Config:Get("enabled") then return end
+    CheckMouseover(dt)
+end)
+
+EventFrame:SetScript("OnEvent", function(self, event, ...)
+    if event == "PLAYER_ENTERING_WORLD" then
+        ZenHUD:Initialize()
+
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        SetCombat(true)
+
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        SetCombat(false)
+
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        local hasTarget = UnitExists("target")
+        local isAlive = hasTarget and not UnitIsDeadOrGhost("target")
+        SetTarget(hasTarget, isAlive)
+
+    elseif event == "PLAYER_UPDATE_RESTING" then
+        SetResting(IsResting())
+
+        -- Failsafe timers for resting state (some zones report late)
+        if IsResting() then
+            Utils.After(1.0, function()
+                if ZenHUD.loaded and IsResting() then
+                    Evaluate("resting_failsafe_1")
+                end
+            end)
+            Utils.After(3.5, function()
+                if ZenHUD.loaded and IsResting() then
+                    Evaluate("resting_failsafe_2")
+                end
+            end)
+        end
+
+    elseif event == "ZONE_CHANGED"
+        or event == "ZONE_CHANGED_INDOORS"
+        or event == "ZONE_CHANGED_NEW_AREA" then
+        OnZoneChanged()
+    end
+end)
 
 --------------------------------------------------------------------------------
 -- Initialization
@@ -250,46 +431,44 @@ end
 function ZenHUD:Initialize()
     if self.loaded then return end
 
-    -- Initialize config
+    -- Initialize config (merge defaults into SavedVariables)
     Config:Initialize()
 
     Utils.Print(string.format("v%s loaded", VERSION))
-    Utils.Print(string.format("Startup delay: %.1fs", self.startupDelay), true)
 
-    -- Initialize frame management (but don't start yet)
+    -- Initialize frame management
     FrameManager:Initialize()
 
-    -- Retry after 300ms for late-loading frames (some frames load after PEW)
+    -- Retry after 300ms for late-loading frames
     Utils.After(0.3, function()
         FrameManager:Initialize()
     end)
 
-    MouseoverDetector:Initialize()
+    -- Initialize compass
+    Compass:Initialize()
 
-    -- Create hover hotspots for all action bars
-    MouseoverDetector:CreateHotspots()
-
-    -- Delayed activation
-    Utils.After(self.startupDelay, function()
+    -- Delayed activation (give all frames time to load)
+    Utils.After(2.0, function()
         self.loaded = true
 
-        -- Set initial states
-        StateManager.inCombat = false
-        StateManager.hasLivingTarget = false
-        StateManager.isResting = IsResting()
-        StateManager.isMounted = IsMounted()
-        StateManager.isDead = UnitIsDeadOrGhost("player")
-        StateManager.onTaxi = UnitOnTaxi("player")
-        StateManager.inVehicle = false  -- Can't reliably detect on load
-        StateManager.isAFK = UnitIsAFK("player") or UnitIsDND("player")
-        StateManager.mouseoverUI = false
+        -- Set initial state
+        State.inCombat = UnitAffectingCombat("player")
+        State.isResting = IsResting()
+        local hasTarget = UnitExists("target")
+        local isAlive = hasTarget and not UnitIsDeadOrGhost("target")
+        State.hasLivingTarget = hasTarget and isAlive
+        State.mouseoverUI = false
 
-        -- Force initial evaluation
-        StateManager:Update()
-
-        -- Start mouseover detection
-        MouseoverDetector:Start()
-
-        Utils.Print("Activated", true)
+        -- Apply settings if enabled
+        if Config:Get("enabled") then
+            FrameManager:Enable()
+            if Config:Get("showCompass") then
+                Compass:Show()
+            end
+            Evaluate("initial")
+            Utils.Print("Immersion mode active")
+        else
+            Utils.Print("Type |cFF00FF00/imui on|r to enable immersion mode")
+        end
     end)
 end

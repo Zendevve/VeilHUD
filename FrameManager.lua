@@ -1,312 +1,365 @@
-﻿--------------------------------------------------------------------------------
--- Frame Manager - Manages all controlled frames
 --------------------------------------------------------------------------------
+-- ZenHUD / Immersion UI - Frame Manager
+-- Two-tier frame visibility management for WotLK 3.3.5a
+-- Supports DragonFlight UI: Reforged (DFRL) detection
+--------------------------------------------------------------------------------
+
 local ZenHUD = _G.ZenHUD
 local Config = ZenHUD.Config
 local Utils = ZenHUD.Utils
 local FrameController = ZenHUD.FrameController
 
 --------------------------------------------------------------------------------
--- Zone Text Detection & Failsafe
---------------------------------------------------------------------------------
-local ZoneText = {}
-
-function ZoneText.IsFrameActive(frame)
-    if not frame or not frame.IsShown or not frame:IsShown() then
-        return false
-    end
-    if frame.GetAlpha then
-        local alpha = frame:GetAlpha() or 1
-        if alpha <= 0.1 then
-            return false
-        end
-    end
-    return true
-end
-
-function ZoneText.IsActive()
-    local zoneFrame = _G["ZoneTextFrame"]
-    local subZoneFrame = _G["SubZoneTextFrame"]
-    return ZoneText.IsFrameActive(zoneFrame) or ZoneText.IsFrameActive(subZoneFrame)
-end
-
-ZenHUD.ZoneText = ZoneText
-
---------------------------------------------------------------------------------
--- Failsafe Timer - Forces UI to show if logic breaks
---------------------------------------------------------------------------------
-local Failsafe = {
-    timer = nil,
-    timeout = 4.0,
-    elapsed = 0,
-}
-
-function Failsafe:Start()
-    if not self.timer then
-        self.timer = CreateFrame("Frame")
-        self.timer:SetScript("OnUpdate", function(_, dt)
-            self.elapsed = self.elapsed + dt
-            if self.elapsed >= self.timeout then
-                self:Stop()
-                Utils.Print("Failsafe triggered - forcing UI show", true)
-                if ZenHUD.FrameManager then
-                    ZenHUD.FrameManager:ShowAll(false)
-                end
-            end
-        end)
-    end
-
-    self.elapsed = 0
-    self.timer:Show()
-end
-
-function Failsafe:Stop()
-    if self.timer then
-        self.timer:Hide()
-    end
-    self.elapsed = 0
-end
-
-ZenHUD.Failsafe = Failsafe
-
---------------------------------------------------------------------------------
--- Frame Manager Implementation
+-- Frame Manager
 --------------------------------------------------------------------------------
 local FrameManager = {
-    controllers = {},
-    updateFrame = nil,
+    hiddenControllers = {},     -- Frames that are completely hidden (alpha 0)
+    fadedControllers = {},      -- Frames that fade between alpha levels
+    chatControllers = {},       -- Chat frames (toggle via /imui showchat/hidechat)
+    updateFrame = nil,          -- OnUpdate driver frame
+    enforcementTimer = 0,       -- Periodic alpha enforcement timer
+    currentFadedAlpha = 0.4,    -- Current target alpha for faded frames
+    initialized = false,
 }
 
--- Frames to control
--- Frame Group Mappings
-local FRAME_GROUPS = {
-    -- Action Bars
-    MainMenuBar = "actionBars",
-    MultiBarBottomLeft = "actionBars",
-    MultiBarBottomRight = "actionBars",
-    MultiBarLeft = "actionBars",
-    MultiBarRight = "actionBars",
-    PetActionBarFrame = "actionBars",
-    ShapeshiftBarFrame = "actionBars",
-    VehicleMenuBar = "actionBars",
-    BonusActionBarFrame = "actionBars",
+--------------------------------------------------------------------------------
+-- Frame Definitions
+--------------------------------------------------------------------------------
 
-    -- Unit Frames
-    PlayerFrame = "unitFrames",
-    PetFrame = "unitFrames",
-    TargetFrameToT = "unitFrames",
-    RuneFrame = "unitFrames",
-    PetCastingBarFrame = "unitFrames",
+-- HIDDEN: Completely hidden when addon is enabled (alpha 0, frame:Hide())
+local HIDDEN_FRAMES = {
+    -- Minimap cluster (entire minimap area)
+    "MinimapCluster",
+    "Minimap",
 
+    -- Unit frames
+    "PlayerFrame",
+    "TargetFrame",
+    "TargetFrameToT",
+    "PetFrame",
+
+    -- Objective tracker
+    "WatchFrame",
+    "QuestWatchFrame",
+    "QuestTimerFrame",
+
+    -- Vehicle
+    "VehicleSeatIndicator",
+
+    -- Social/Emotes
+    "SocialsMicroButton",
+}
+
+-- FADED: Visible at reduced alpha, adjusts based on combat/mouseover/resting
+-- 40% idle → 80% combat/target → 100% mouseover/resting
+local FADED_FRAMES = {
     -- Buffs
-    BuffFrame = "buffs",
-    TemporaryEnchantFrame = "buffs",
+    "BuffFrame",
+    "TemporaryEnchantFrame",
 
-    -- Quest
-    WatchFrame = "quest",
-    QuestWatchFrame = "quest",
-    QuestTimerFrame = "quest",
+    -- Action bars
+    "MainMenuBar",
+    "MultiBarBottomLeft",
+    "MultiBarBottomRight",
+    "MultiBarLeft",
+    "MultiBarRight",
+    "PetActionBarFrame",
+    "ShapeshiftBarFrame",
+    "BonusActionBarFrame",
+    "VehicleMenuBar",
 
-    -- Chat
-    ChatFrameMenuButton = "chat",
-    ChatFrame1UpButton = "chat",
-    ChatFrame1DownButton = "chat",
-    ChatFrame1BottomButton = "chat",
+    -- XP / Rep bars
+    "MainMenuExpBar",
+    "MainMenuBarMaxLevelBar",
+    "ReputationWatchBar",
 
-    -- Misc (everything else defaults to misc if not in this list)
-    MainMenuExpBar = "misc",
-    MainMenuBarMaxLevelBar = "misc",
-    ReputationWatchBar = "misc",
-    MainMenuBarArtFrame = "misc",
-    CharacterMicroButton = "misc",
-    SpellbookMicroButton = "misc",
-    TalentMicroButton = "misc",
-    QuestLogMicroButton = "misc",
-    SocialsMicroButton = "misc",
-    WorldMapMicroButton = "misc",
-    MainMenuMicroButton = "misc",
-    HelpMicroButton = "misc",
-    MainMenuBarBackpackButton = "misc",
-    CharacterBag0Slot = "misc",
-    CharacterBag1Slot = "misc",
-    CharacterBag2Slot = "misc",
-    CharacterBag3Slot = "misc",
-    KeyRingButton = "misc",
-}
-
--- Frames to control (List for iteration)
-local CONTROLLED_FRAMES = {
-    "MainMenuBar", "MultiBarBottomLeft", "MultiBarBottomRight",
-    "MultiBarLeft", "MultiBarRight", "PetActionBarFrame", "ShapeshiftBarFrame",
-    "MainMenuExpBar", "MainMenuBarMaxLevelBar", "ReputationWatchBar",
+    -- Art frame (action bar background)
     "MainMenuBarArtFrame",
-    "CharacterMicroButton", "SpellbookMicroButton", "TalentMicroButton",
-    "QuestLogMicroButton", "SocialsMicroButton", "WorldMapMicroButton",
-    "MainMenuMicroButton", "HelpMicroButton",
-    "MainMenuBarBackpackButton", "CharacterBag0Slot", "CharacterBag1Slot",
-    "CharacterBag2Slot", "CharacterBag3Slot", "KeyRingButton",
-    "PlayerFrame", "PetFrame", "TargetFrameToT",
-    "BuffFrame", "TemporaryEnchantFrame",
-    "WatchFrame", "QuestWatchFrame",
-    "ChatFrameMenuButton", "ChatFrame1UpButton", "ChatFrame1DownButton",
-    "ChatFrame1BottomButton",
+
+    -- Micro buttons (part of action bar area)
+    "CharacterMicroButton",
+    "SpellbookMicroButton",
+    "TalentMicroButton",
+    "QuestLogMicroButton",
+    "WorldMapMicroButton",
+    "MainMenuMicroButton",
+    "HelpMicroButton",
+
+    -- Bags
+    "MainMenuBarBackpackButton",
+    "CharacterBag0Slot",
+    "CharacterBag1Slot",
+    "CharacterBag2Slot",
+    "CharacterBag3Slot",
+    "KeyRingButton",
+
+    -- Unit frame extras (cast bars, runes)
     "PetCastingBarFrame",
-    "VehicleMenuBar", "RuneFrame", "QuestTimerFrame", "BonusActionBarFrame",
+    "RuneFrame",
 }
 
--- Conditional frames (don't force show)
+-- CHAT: Handled separately (toggleable via /imui showchat/hidechat)
+local CHAT_FRAMES = {
+    "ChatFrame1",
+    "ChatFrame2",
+    "ChatFrame3",
+    "ChatFrame4",
+    "ChatFrame5",
+    "ChatFrame6",
+    "ChatFrame7",
+    "ChatFrameMenuButton",
+    "ChatFrame1UpButton",
+    "ChatFrame1DownButton",
+    "ChatFrame1BottomButton",
+    "ChatFrame1Tab",
+    "GeneralDockManager",
+}
+
+-- DragonFlight UI: Reforged - Hidden frames
+local DFRL_HIDDEN = {
+    "DFRL_GryphonContainer",
+    "DFRLBagToggleButton",
+    "DFRLEBCMicroButton",
+    "DFRLLFTMicroButton",
+    "DFRLPvPMicroButton",
+    "DFRL_NetStatsFrame",
+    "DFRL_LatencyIndicator",
+    "DFRLLowLevelTalentsButton",
+}
+
+-- DragonFlight UI: Reforged - Faded frames
+local DFRL_FADED = {
+    "DFRL_ShapeshiftBar",
+    "DFRL_MainBar",
+    "DFRL_RepBar",
+    "DFRL_XPBar",
+    "DFRL_PagingContainer",
+    "DFRL_ActionBar",
+}
+
+-- Conditional frames: don't force Show() when restoring (they appear contextually)
 local CONDITIONAL_FRAMES = {
     PetFrame = true,
+    TargetFrame = true,
     TargetFrameToT = true,
     PetCastingBarFrame = true,
     VehicleMenuBar = true,
+    VehicleSeatIndicator = true,
     RuneFrame = true,
     BonusActionBarFrame = true,
 }
 
 --------------------------------------------------------------------------------
--- ElvUI / Tukui Frame Detection
+-- Internal helpers
 --------------------------------------------------------------------------------
--- Known ElvUI frame name patterns to search for
-local ELVUI_FRAME_PATTERNS = {
-    -- Action Bars (ElvUI uses ElvUI_Bar1 through ElvUI_Bar10)
-    { pattern = "ElvUI_Bar%d+", group = "elvui", fadeOnly = true },
-    -- Unit Frames
-    { pattern = "ElvUF_Player", group = "elvui", conditional = false },
-    { pattern = "ElvUF_Target", group = "elvui", conditional = false },
-    { pattern = "ElvUF_Pet", group = "elvui", conditional = true },
-    -- Tukui equivalents
-    { pattern = "TukuiActionBar%d+", group = "elvui", fadeOnly = true },
-    { pattern = "TukuiPlayer", group = "elvui", conditional = false },
-    { pattern = "TukuiTarget", group = "elvui", conditional = false },
-}
 
---------------------------------------------------------------------------------
--- Frame Manager Functions
---------------------------------------------------------------------------------
-function FrameManager:Initialize()
-    -- Initialize Blizzard frames
-    for _, frameName in ipairs(CONTROLLED_FRAMES) do
-        local frame = _G[frameName]
-        if frame and frame.SetAlpha and frame.Show and frame.Hide then
-            -- Check if frame group is enabled
-            local group = FRAME_GROUPS[frameName] or "misc"
-            if Config:IsFrameGroupEnabled(group) then
-                local controller = FrameController:New(frame)
-
-                if CONDITIONAL_FRAMES[frameName] then
-                    controller:SetConditional(true)
-                end
-
-                self.controllers[frame] = controller
-                Utils.Print("Controlling: " .. frameName, true)
-            end
-        else
-            Utils.Print("Skipped: " .. frameName .. " (not found)", true)
+-- Register a single frame into a controller table
+local function RegisterFrame(controllerTable, frameName, category)
+    local frame = _G[frameName]
+    if frame and frame.SetAlpha and frame.Show and frame.Hide then
+        local controller = FrameController:New(frame, category)
+        -- For conditional frames, mark wasShown based on current context
+        if CONDITIONAL_FRAMES[frameName] then
+            controller.wasShown = frame:IsShown()
         end
+        table.insert(controllerTable, controller)
+        Utils.Print("Registered: " .. frameName .. " [" .. category .. "]", true)
+    else
+        Utils.Print("Skipped: " .. frameName .. " (not found)", true)
+    end
+end
+
+--------------------------------------------------------------------------------
+-- FrameManager API
+--------------------------------------------------------------------------------
+
+--- Initialize all frame controllers and start the animation loop
+function FrameManager:Initialize()
+    -- Clear previous controllers (for re-initialization)
+    self.hiddenControllers = {}
+    self.fadedControllers = {}
+    self.chatControllers = {}
+
+    -- Register Blizzard hidden frames
+    for _, name in ipairs(HIDDEN_FRAMES) do
+        RegisterFrame(self.hiddenControllers, name, "hidden")
     end
 
-    -- Detect and initialize ElvUI/Tukui frames
-    if _G.ElvUI or _G.Tukui then
-        self:InitializeElvUIFrames()
+    -- Register Blizzard faded frames
+    for _, name in ipairs(FADED_FRAMES) do
+        RegisterFrame(self.fadedControllers, name, "faded")
     end
 
-    -- Create update frame for animations
+    -- Register chat frames
+    for _, name in ipairs(CHAT_FRAMES) do
+        RegisterFrame(self.chatControllers, name, "chat")
+    end
+
+    -- Detect and register DragonFlight UI: Reforged frames
+    self:DetectDFRL()
+
+    -- Create the animation update frame
     if not self.updateFrame then
         self.updateFrame = CreateFrame("Frame")
-        self.updateFrame:SetScript("OnUpdate", function(_, elapsed)
-            self:Update(elapsed)
+        self.updateFrame:SetScript("OnUpdate", function(_, dt)
+            self:Update(dt)
         end)
     end
 
-    Utils.Print(string.format("Managing %d frames", self:Count()), true)
+    self.initialized = true
+
+    local total = #self.hiddenControllers + #self.fadedControllers + #self.chatControllers
+    Utils.Print(string.format("Managing %d frames (%d hidden, %d faded, %d chat)",
+        total, #self.hiddenControllers, #self.fadedControllers, #self.chatControllers), true)
 end
 
-function FrameManager:InitializeElvUIFrames()
-    if not Config:IsFrameGroupEnabled("elvui") then return end
-
-    for frameName, frameObj in pairs(_G) do
-        if type(frameObj) == "table" and frameObj.SetAlpha and frameObj.Show and frameObj.Hide then
-            for _, patternInfo in ipairs(ELVUI_FRAME_PATTERNS) do
-                if string.match(frameName, "^" .. patternInfo.pattern .. "$") or frameName == patternInfo.pattern then
-                    if not self.controllers[frameObj] then
-                        local controller = FrameController:New(frameObj)
-                        if patternInfo.fadeOnly then
-                            controller:SetFadeOnly(true)
-                        end
-                        if patternInfo.conditional then
-                            controller:SetConditional(true)
-                        end
-                        self.controllers[frameObj] = controller
-                        Utils.Print("Controlling ElvUI frame: " .. frameName, true)
-                    end
-                    break
-                end
+--- Detect DragonFlight UI: Reforged and register its frames
+function FrameManager:DetectDFRL()
+    -- Check if any DFRL frame exists in the global namespace
+    local hasDFRL = false
+    for _, name in ipairs(DFRL_HIDDEN) do
+        if _G[name] then
+            hasDFRL = true
+            break
+        end
+    end
+    if not hasDFRL then
+        for _, name in ipairs(DFRL_FADED) do
+            if _G[name] then
+                hasDFRL = true
+                break
             end
+        end
+    end
+
+    if not hasDFRL then
+        Utils.Print("DFRL not detected", true)
+        return
+    end
+
+    Utils.Print("DragonFlight UI: Reforged detected!", true)
+
+    for _, name in ipairs(DFRL_HIDDEN) do
+        RegisterFrame(self.hiddenControllers, name, "hidden")
+    end
+
+    for _, name in ipairs(DFRL_FADED) do
+        RegisterFrame(self.fadedControllers, name, "faded")
+    end
+end
+
+--- Enable immersion mode — apply all visibility rules
+function FrameManager:Enable()
+    -- Hide all hidden frames
+    for _, controller in ipairs(self.hiddenControllers) do
+        controller:FadeTo(0, Config:Get("fadeTime"))
+    end
+
+    -- Set faded frames to idle alpha
+    local fadedAlpha = Config:Get("fadedAlpha")
+    self.currentFadedAlpha = fadedAlpha
+    for _, controller in ipairs(self.fadedControllers) do
+        controller:FadeTo(fadedAlpha, Config:Get("fadeTime"))
+    end
+
+    -- Apply chat visibility
+    self:SetChatVisible(Config:Get("showChat"))
+end
+
+--- Disable immersion mode — restore all frames to full visibility
+function FrameManager:Disable()
+    -- Restore hidden frames
+    for _, controller in ipairs(self.hiddenControllers) do
+        controller:FadeTo(1, Config:Get("fadeTime"))
+        -- Ensure the frame is shown (in case it was Hide()'d)
+        if controller.wasShown then
+            controller.frame:Show()
+            controller.frame:SetAlpha(controller.currentAlpha)
+        end
+    end
+
+    -- Restore faded frames
+    self.currentFadedAlpha = 1
+    for _, controller in ipairs(self.fadedControllers) do
+        controller:FadeTo(1, Config:Get("fadeTime"))
+    end
+
+    -- Restore chat
+    for _, controller in ipairs(self.chatControllers) do
+        controller:FadeTo(1, Config:Get("fadeTime"))
+        controller.frame:Show()
+    end
+end
+
+--- Set the target alpha for all faded frames
+-- @param alpha  Target alpha (0.4 = idle, 0.8 = combat, 1.0 = mouseover/resting)
+function FrameManager:SetFadedAlpha(alpha)
+    if math.abs(self.currentFadedAlpha - alpha) < 0.01 then return end
+
+    self.currentFadedAlpha = alpha
+    local duration = Config:Get("fadeTime")
+
+    for _, controller in ipairs(self.fadedControllers) do
+        controller:FadeTo(alpha, duration)
+    end
+end
+
+--- Toggle chat frame visibility
+-- @param show  true to show, false to hide
+function FrameManager:SetChatVisible(show)
+    local duration = Config:Get("fadeTime")
+
+    if show then
+        for _, controller in ipairs(self.chatControllers) do
+            controller.frame:Show()
+            controller:FadeTo(1, duration)
+        end
+    else
+        for _, controller in ipairs(self.chatControllers) do
+            -- Use alpha 0 (not Hide) so the edit box remains functional
+            controller:FadeTo(0, duration)
         end
     end
 end
 
+--- Animation update tick — drives all controller animations
 function FrameManager:Update(dt)
-    for _, controller in pairs(self.controllers) do
+    -- Update hidden controllers
+    for _, controller in ipairs(self.hiddenControllers) do
         controller:Update(dt)
     end
-end
 
-function FrameManager:ShowAll(priority)
-    -- Check for zone text - delay if active
-    if ZoneText.IsActive() then
-        Utils.Print("Zone text active - delaying show", true)
-        Failsafe:Start()
-        Utils.After(0.2, function()
-            if not ZoneText.IsActive() then
-                self:ShowAll(priority)
-            else
-                -- Retry with timeout
-                Utils.After(3.0, function()
-                    Failsafe:Stop()
-                    self:ShowAll(priority)
-                end)
-            end
-        end)
-        return
+    -- Update faded controllers
+    for _, controller in ipairs(self.fadedControllers) do
+        controller:Update(dt)
     end
 
-    Failsafe:Stop()
-    for _, controller in pairs(self.controllers) do
-        controller:Show(priority)
+    -- Update chat controllers
+    for _, controller in ipairs(self.chatControllers) do
+        controller:Update(dt)
+    end
+
+    -- Periodic enforcement: re-apply alpha if WoW's internal code resets it
+    self.enforcementTimer = self.enforcementTimer + dt
+    if self.enforcementTimer >= 0.5 then
+        self.enforcementTimer = 0
+        if Config:Get("enabled") then
+            self:EnforceAlpha()
+        end
     end
 end
 
-function FrameManager:HideAll()
-    -- Check for zone text - delay if active
-    if ZoneText.IsActive() then
-        Utils.Print("Zone text active - delaying hide", true)
-        Utils.After(0.2, function()
-            if not ZoneText.IsActive() then
-                self:HideAll()
-            else
-                -- Retry with timeout
-                Utils.After(3.0, function()
-                    self:HideAll()
-                end)
-            end
-        end)
-        return
-    end
-
-    for _, controller in pairs(self.controllers) do
-        controller:Hide()
+--- Enforce correct alpha on faded frames (catches WoW's internal alpha resets)
+function FrameManager:EnforceAlpha()
+    for _, controller in ipairs(self.fadedControllers) do
+        controller:Enforce(self.currentFadedAlpha)
     end
 end
 
+--- Get count of managed frames
 function FrameManager:Count()
-    local count = 0
-    for _ in pairs(self.controllers) do
-        count = count + 1
-    end
-    return count
+    return #self.hiddenControllers + #self.fadedControllers + #self.chatControllers
 end
 
--- Export to ZenHUD namespace
+-- Export to namespace
 ZenHUD.FrameManager = FrameManager
