@@ -2,7 +2,7 @@
 
 *A minimal, intelligent UI for a more cinematic WotLK.*
 
-[https://ibb.co/YMfJT6n](https://i.ibb.co/Pn1JzRX/2026-07-10-16-06-29-00-00-11-092-00-00-19-100.gif)
+<a href="https://imgbb.com/"><img src="https://i.ibb.co/Pn1JzRX/2026-07-10-16-06-29-00-00-11-092-00-00-19-100.gif" alt="2026 07 10 16 06 29 00 00 11 092 00 00 19 100" border="0"></a>
 
 VeilHUD is a lightweight addon for WotLK 3.3.5a that fades your action
 bars, micro menu, bags, unit frames, and a handful of other UI pieces out
