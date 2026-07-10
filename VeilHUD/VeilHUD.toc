@@ -1,0 +1,7 @@
+## Interface: 30300
+## Title: VeilHUD
+## Notes: Hides your UI during normal play, brings it back when it matters.
+## Version: 1.0.0
+## SavedVariables: VeilHUDDB
+
+VeilHUD.lua
