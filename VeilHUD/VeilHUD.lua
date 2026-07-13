@@ -50,6 +50,9 @@ local f      = CreateFrame("Frame")
 -- Always keep Controllers defined to avoid pairs(nil) before PEW
 local Controllers = {}
 
+-- C_Timer is available since 3.3.5; alias so all call sites work before PEW
+C_TimerAfter = C_Timer.After
+
 -- ====== Delay tweaks ======
 -- These values control how long the UI stays visible after certain actions.
 -- You can freely tweak them to taste without breaking the rest of the addon.
@@ -794,18 +797,6 @@ f:RegisterEvent("UPDATE_SHAPESHIFT_USABLE")
 f:SetScript("OnEvent", function()
   if event == "PLAYER_ENTERING_WORLD" then
     InitDB()
-
-    C_TimerAfter = function(sec, fn)
-      local t = CreateFrame("Frame")
-      t.elapsed = 0
-      t:SetScript("OnUpdate", function()
-        t.elapsed = t.elapsed + (arg1 or 0)
-        if t.elapsed >= sec then
-          t:SetScript("OnUpdate", nil)
-          if type(fn) == "function" then fn() end
-        end
-      end)
-    end
 
     -- Create controllers normally
     ResolveControllers()
