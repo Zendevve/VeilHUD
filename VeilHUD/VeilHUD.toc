@@ -4,4 +4,9 @@
 ## Version: 1.0.0
 ## SavedVariables: VeilHUDDB
 
+Modules\Utils.lua
+Modules\Config.lua
+Modules\Controller.lua
+Modules\Guards.lua
+Modules\Core.lua
 VeilHUD.lua
