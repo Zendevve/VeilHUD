@@ -50,8 +50,42 @@ local f      = CreateFrame("Frame")
 -- Always keep Controllers defined to avoid pairs(nil) before PEW
 local Controllers = {}
 
--- C_Timer is available since 3.3.5; alias so all call sites work before PEW
-C_TimerAfter = C_Timer.After
+-- C_Timer.After polyfill for 3.3.5a (WotLK) where native C_Timer is not available
+local C_TimerAfter
+if type(C_Timer) == "table" and type(C_Timer.After) == "function" then
+  C_TimerAfter = C_Timer.After
+else
+  local pendingTimers = {}
+  local timerFrame = CreateFrame("Frame")
+  timerFrame:SetScript("OnUpdate", function(self, elapsed)
+    local i = 1
+    while i <= #pendingTimers do
+      local timer = pendingTimers[i]
+      timer.elapsed = timer.elapsed + elapsed
+      if timer.elapsed >= timer.delay then
+        table.remove(pendingTimers, i)
+        if type(timer.func) == "function" then
+          local ok, err = pcall(timer.func)
+          if not ok and geterrorhandler then
+            geterrorhandler()(err)
+          end
+        end
+      else
+        i = i + 1
+      end
+    end
+  end)
+
+  C_TimerAfter = function(delay, func)
+    if type(func) ~= "function" then return end
+    table.insert(pendingTimers, {
+      delay = tonumber(delay) or 0,
+      elapsed = 0,
+      func = func,
+    })
+  end
+end
+_G.C_TimerAfter = C_TimerAfter
 
 -- ====== Delay tweaks ======
 -- These values control how long the UI stays visible after certain actions.
